@@ -1,5 +1,4 @@
 import paf_config as paf_cfg
-#import paradigm_config as para_cfg
 import mne
 import numpy as np
 from scipy.signal import savgol_filter, find_peaks, peak_widths
@@ -9,7 +8,7 @@ import os
 import matplotlib.pyplot as plt
 import time
 
-def gather_peak_metrics(iter, freqs, signal, peak_inds, peak_bounds, delta_freq):
+def gather_peak_metrics(iter, freqs, signal, peak_inds, peak_bounds, freq_res):
     """
     determine frequency span of each peak, as well as integrating the region bound by the peak's extrema
     :param iter: current index value to access location of peak
@@ -17,7 +16,7 @@ def gather_peak_metrics(iter, freqs, signal, peak_inds, peak_bounds, delta_freq)
     :param signal: filtered channel PSD array
     :param peak_inds: indices of peaks
     :param peak_bounds: nested arrays containing: minimia widths, minima heights, left and right interpolated indices
-    :param delta_freq: frequency resolution
+    :param freq_res: frequency resolution
     :return: the peak frequency, and its Q-weight
     """
 
@@ -32,8 +31,8 @@ def gather_peak_metrics(iter, freqs, signal, peak_inds, peak_bounds, delta_freq)
     right_minima_sample = peak_bounds[3][iter]
 
     # interpolate frequency value for each minima
-    left_minima_freq = freqs[peak_idx] - (delta_freq * (peak_idx - left_minima_sample))
-    right_minima_freq = freqs[peak_idx] + np.abs(delta_freq * (peak_idx - right_minima_sample))
+    left_minima_freq = freqs[peak_idx] - (freq_res * (peak_idx - left_minima_sample))
+    right_minima_freq = freqs[peak_idx] + np.abs(freq_res * (peak_idx - right_minima_sample))
 
     # aggregate the extrema
     extrema_freqs = np.array([left_minima_freq, peak_freq, right_minima_freq])
@@ -41,19 +40,19 @@ def gather_peak_metrics(iter, freqs, signal, peak_inds, peak_bounds, delta_freq)
 
     # final metrics...
     au_peak = np.trapz(extrema_heights, x=extrema_freqs)  # find the area under the peak (AUP)...
-    peak_q = au_peak / (delta_freq * minima_width)  # scale by the frequency span of the peak
+    peak_q = au_peak / (freq_res * minima_width)  # scale by the frequency span of the peak
 
     return peak_freq, peak_q
 
 
-def find_channel_peak_freq_and_qweight(freqs, signal, peak_inds, peak_bounds, delta_freq):
+def find_channel_peak_freq_and_qweight(freqs, signal, peak_inds, peak_bounds, freq_res):
     """
     wrapper function for gather_peak_metrics() above
     :param freqs: frequency array
     :param signal: filtered channel PSD array
     :param peak_inds: indices of peaks
     :param peak_bounds: nested arrays containing: minimia widths, minima heights, left and right interpolated indices
-    :param delta_freq: frequency resolution
+    :param freq_res: frequency resolution
     :return: peak frequencies and their corresponding Q-weights for an entire channel
     """
     channel_peak_freqs = []
@@ -61,7 +60,7 @@ def find_channel_peak_freq_and_qweight(freqs, signal, peak_inds, peak_bounds, de
 
     # collect data on each peak...
     for i in range(peak_inds.size):
-        peak_freq, peak_q = gather_peak_metrics(i, freqs, signal, peak_inds, peak_bounds, delta_freq)
+        peak_freq, peak_q = gather_peak_metrics(i, freqs, signal, peak_inds, peak_bounds, freq_res)
 
         channel_peak_freqs.append(peak_freq)
         channel_peak_qweights.append(peak_q)
@@ -92,18 +91,18 @@ def filter_signal_and_calculate_pmin(freqs, signal, window_len, filter_order):
     return signal_filtered, pmin
 
 
-def compute_psd(evoked, picks1, picks2, n_jobs, alpha_window, cropped=True):
+def compute_psd(evoked, picks_modern, picks_legacy, n_jobs, alpha_window, cropped=True):
     """
     :param evoked: mne.Evoked object
     :param picks: selection of channels to parse
     :param alpha_window: lower and upper bounds to frequency range spanning alpha oscillations
-    :param cropped: if True, crop the frequency and PSD array returned to the range of alpha_window
+    :param cropped: if True, crop the frequency and PSD array returned to the range of alpha_window (DEFAULT: TRUE)
     :return: PSD array (n_channels, n_freqs), frequency array (n_freqs,)
     """
     try:
-        psd, freqs = mne.time_frequency.psd_welch(evoked, n_fft=3300, picks=picks1, n_jobs=n_jobs)
-    except:
-        psd, freqs = mne.time_frequency.psd_welch(evoked, n_fft=3300, picks=picks2, n_jobs=n_jobs)
+        psd, freqs = mne.time_frequency.psd_welch(evoked, n_fft=3300, picks=picks_modern, n_jobs=n_jobs)
+    except ValueError:
+        psd, freqs = mne.time_frequency.psd_welch(evoked, n_fft=3300, picks=picks_legacy, n_jobs=n_jobs)
     if cropped:
         alpha_low_bound_idx = np.where(freqs >= alpha_window[0])[0][0]
         alpha_hi_bound_idx = np.where(freqs >= alpha_window[1])[0][0]
@@ -115,14 +114,11 @@ def compute_psd(evoked, picks1, picks2, n_jobs, alpha_window, cropped=True):
 
 def run_paf(evoked): # main body that interacts with sensor_space_analysis module
 
-    # select occipital channels only for this resting state analysis
-    occipital_selection1 = mne.read_selection(['Left-occipital', 'Right-occipital'])
-    occipital_selection2 = [ocs.replace(' ', '') for ocs in occipital_selection1]
+    psd, freqs = compute_psd(evoked, paf_cfg.occipital_selection_narrow, paf_cfg.occipital_selection_narrow_legacy,
+                             n_jobs=18, alpha_window=paf_cfg.alpha_band)
 
-    psd, freqs = compute_psd(evoked, occipital_selection2, occipital_selection1, n_jobs=18, alpha_window=paf_cfg.alpha_band)
-    delta_freq = np.diff(freqs).mean() # change this variable name to something else (delta waves exist)
-    print(psd.shape)
-    print(freqs)
+    freq_res = np.diff(freqs).mean() # change this variable name to something else (delta waves exist)
+
     subject_peak_freqs = []
     subject_peak_qweights = []
     smooth_psd = np.zeros(psd.shape)
@@ -135,9 +131,11 @@ def run_paf(evoked): # main body that interacts with sensor_space_analysis modul
         peak_inds, _ = find_peaks(signal_filtered, height=pmin) # only find peaks greater than the model has predicted
         if peak_inds.size == 0:
             continue # no peaks detected... skip this channel and move on to the next one
-        peak_bounds = peak_widths(signal_filtered, peak_inds, rel_height=0.5) # return minima characteristics for each peak
+        # return minima characteristics for each peak
+        peak_bounds = peak_widths(signal_filtered, peak_inds, rel_height=0.5)
 
-        channel_peak_freqs, channel_peak_qweights = find_channel_peak_freq_and_qweight(freqs, signal_filtered, peak_inds, peak_bounds, delta_freq)
+        channel_peak_freqs, channel_peak_qweights = find_channel_peak_freq_and_qweight(freqs, signal_filtered,
+                                                                                       peak_inds, peak_bounds, freq_res)
 
         # determine the most significant peak in the channel
         channel_peak_freq = channel_peak_freqs[np.argmax(channel_peak_qweights)]
@@ -156,14 +154,12 @@ def run_paf(evoked): # main body that interacts with sensor_space_analysis modul
     return freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, paf, paf_max_q
 
 
-
-
 if __name__ == '__main__':
-    #evos = sorted(fnmatch.filter(os.listdir(), '*ave.fif'))
-    #first_pass = mne.read_evokeds(evos[0])[0]
-    #second_pass = mne.read_evokeds(evos[1])[0]
-    start = time.time()
-    rep = mne.Report()
+
+    start = time.time() # script timing
+
+    rep = mne.Report() # use MNE reports to test cases
+    rep_name = f'PAF_module_case_testing_filterlength{paf_cfg.sgf_width}_polyorder{paf_cfg.k}.html'
     df = pd.read_csv('prelim_fixation_age_vs_peak.csv')
     for _, subj_row in df.iterrows():
         subj = subj_row['subject_id']
@@ -183,16 +179,13 @@ if __name__ == '__main__':
         subject_evo = mne.read_evokeds(evo_match[0])[0]
 
         freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, paf, paf_max_q = run_paf(subject_evo)
-        #print(f'Subject {subject}, PAF (max Q): {paf_max_q}')
         fig, (ax_orig, ax_smooth) = plt.subplots(2, 1, sharex=True, sharey=True)
         for channel_orig in psd:
             ax_orig.plot(freqs, channel_orig)
         ax_orig.axvline(paf_max_q, ls='--', c='r', label='Max Q')
         ax_orig.axvline(paf, ls='--', c='k', label='MATLAB')
-        #ax_orig.set_xlabel('Frequency [Hz]')
         ax_orig.set_ylabel('PSD (original)')
         ax_orig.set_ylim((0, psd.max() + 1.5))
-        #ax_orig.set_title('Original PSD')
         
         for channel_smooth in smooth_psd:
             ax_smooth.plot(freqs, channel_smooth)
@@ -201,48 +194,16 @@ if __name__ == '__main__':
         ax_smooth.set_xlabel('Frequency [Hz]')
         ax_smooth.set_ylabel('Smoothed PSD')
         ax_smooth.set_ylim((0, psd.max() + 1.5))
-        #ax_smooth.set_title('Filtered PSD')
         
         fig.legend()
         fig.suptitle(f'Subject ID: {subject}, Age: {age}')
         rep.add_figs_to_section(fig, captions=subject, section=diagnosis)
-        """
-        fig = plt.figure()
-        ax = fig.gca()
-        for channel in psd:
-            ax.plot(freqs, channel)
-        ax.axvline(paf_max_q, ls='--', c='r', label='Max Q')
-        ax.axvline(paf, ls=':', c='k', label='MATLAB')
-        ax.set_ylabel('PSD')
-        ax.set_xlabel('Frequency [Hz]')
-        ax.set_ylim((0, psd.max() + 1.5))
-        fig.legend()
-        fig.suptitle(f'Subject ID: {subject}, Age: {age}')
-        rep.add_figs_to_section(fig, captions=subject, section=diagnosis)
-        """
+
         plt.close(fig)
         del fig
-    rep.save('paf_vs_age_fixation.html', open_browser=False, overwrite=True)
+
+    rep.save(rep_name, open_browser=False, overwrite=True)
     print(f'Time to complete: {time.time() - start}')
-        
-        
-        
-    """
-    fig = plt.figure()
-    ax = fig.gca()
-    for channel in psd:
-        ax.plot(freqs, channel)
-    ax.axvline(paf_max_q, ls='--', label='PAF')
-    ax.set_ylabel('PSD (pre-cleaning)')
-    ax.set_xlabel('Frequency [Hz]')
-    fig.legend()
-    fig.show()
-    """
-
-
-
-
-
 
 
 
