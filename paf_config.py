@@ -3,7 +3,7 @@ from mne import read_selection
 sgf_width = 11
 
 # savitzky-golay filter polynomial degree/order, greater = less smoothing, better preservation of feature heights, widths
-k = 5 # default 5
+k = 9 # default 5
 
 # alpha band width [Hz]
 alpha_band = [7, 13]
@@ -13,6 +13,10 @@ diffp = 0.2 # 20%
 
 # minimum number of channel estimates for computing cross-channel averages
 cmin = 3
+
+# number of unique channels to use for ranking
+n_peaks_to_rank = 5
+rank_by_colors = ['b', 'g', 'r', 'm', 'y']
 
 # channels to use for PAF
 occipital_selection_all_legacy = read_selection(['Left-occipital', 'Right-occipital'])
