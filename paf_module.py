@@ -8,6 +8,23 @@ import os
 import matplotlib.pyplot as plt
 import time
 
+
+def rank_peaks_by_qweight(channel_weights, peak_freqs):
+    """
+    rank peaks in descending order (high to low) by their Q-weight (max Q-weight normalized)
+    :param channel_weights: normalized Q-weights for each channel's peak alpha frequency
+    :param peak_freqs: peak frequencies for each channel
+    :return: unique, sorted (descending order) peak frequencies for a subject's channels
+    """
+    sorted_channel_weights = np.argsort(channel_weights)[::-1]
+    sorted_peak_freqs = peak_freqs[sorted_channel_weights] # peak frequencies
+    _, uniques_idx = np.unique(sorted_peak_freqs, return_index=True)
+    sorted_unique_peak_freqs = sorted_peak_freqs[np.sort(uniques_idx)]
+
+    return sorted_unique_peak_freqs
+
+
+
 def gather_peak_metrics(iter, freqs, signal, peak_inds, peak_bounds, freq_res):
     """
     determine frequency span of each peak, as well as integrating the region bound by the peak's extrema
@@ -145,13 +162,18 @@ def run_paf(evoked): # main body that interacts with sensor_space_analysis modul
         subject_peak_freqs.append(channel_peak_freq)
         subject_peak_qweights.append(channel_peak_qweight)
 
+    subject_peak_freqs = np.asarray(subject_peak_freqs)
+    subject_peak_qweights = np.asarray(subject_peak_qweights)
     # perform cross-channel averaging
-    channel_weights = np.array(subject_peak_qweights) / np.array(subject_peak_qweights).max()
+    channel_weights = subject_peak_qweights / subject_peak_qweights.max()
     # not so sure about the below... it seems very passive and average-y...
-    paf = np.sum(np.array(subject_peak_freqs) * channel_weights) / np.sum(channel_weights)
+    #paf = np.sum(subject_peak_freqs * channel_weights) / np.sum(channel_weights) # MATLAB formula...?
     # why not locate the greatest Q?
-    paf_max_q = subject_peak_freqs[np.argmax(subject_peak_qweights)]
-    return freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, paf, paf_max_q
+    #paf_max_q = subject_peak_freqs[np.argmax(subject_peak_qweights)]
+
+    ranked_peaks = rank_peaks_by_qweight(channel_weights, subject_peak_freqs) # max Q in first index
+
+    return freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, ranked_peaks
 
 
 if __name__ == '__main__':
@@ -160,6 +182,7 @@ if __name__ == '__main__':
 
     rep = mne.Report() # use MNE reports to test cases
     rep_name = f'PAF_module_case_testing_filterlength{paf_cfg.sgf_width}_polyorder{paf_cfg.k}.html'
+
     df = pd.read_csv('prelim_fixation_age_vs_peak.csv')
     for _, subj_row in df.iterrows():
         subj = subj_row['subject_id']
@@ -178,23 +201,24 @@ if __name__ == '__main__':
             continue
         subject_evo = mne.read_evokeds(evo_match[0])[0]
 
-        freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, paf, paf_max_q = run_paf(subject_evo)
+        freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, ranked_peaks = run_paf(subject_evo)
+        top_n_ranked_peaks = ranked_peaks[:paf_cfg.n_peaks_to_rank]
         fig, (ax_orig, ax_smooth) = plt.subplots(2, 1, sharex=True, sharey=True)
         for channel_orig in psd:
             ax_orig.plot(freqs, channel_orig)
-        ax_orig.axvline(paf_max_q, ls='--', c='r', label='Max Q')
-        ax_orig.axvline(paf, ls='--', c='k', label='MATLAB')
         ax_orig.set_ylabel('PSD (original)')
         ax_orig.set_ylim((0, psd.max() + 1.5))
         
         for channel_smooth in smooth_psd:
             ax_smooth.plot(freqs, channel_smooth)
-        ax_smooth.axvline(paf_max_q, ls='--', c='r', label='Max Q')
-        ax_smooth.axvline(paf, ls='--', c='k', label='MATLAB')
         ax_smooth.set_xlabel('Frequency [Hz]')
         ax_smooth.set_ylabel('Smoothed PSD')
         ax_smooth.set_ylim((0, psd.max() + 1.5))
-        
+
+        for peak_rank, peak_frequency in enumerate(top_n_ranked_peaks):
+            ax_orig.axvline(peak_frequency, ls='--', c=paf_cfg.rank_by_colors[peak_rank],
+                            label=f'Rank {peak_rank + 1}: {peak_frequency.round(2)} Hz')
+
         fig.legend()
         fig.suptitle(f'Subject ID: {subject}, Age: {age}')
         rep.add_figs_to_section(fig, captions=subject, section=diagnosis)
