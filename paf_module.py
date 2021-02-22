@@ -6,8 +6,6 @@ import pandas as pd
 import fnmatch
 import os
 import matplotlib.pyplot as plt
-import time
-
 
 def rank_peaks_by_qweight(channel_weights, peak_freqs):
     """
@@ -108,7 +106,7 @@ def filter_signal_and_calculate_pmin(freqs, signal, window_len, filter_order):
     return signal_filtered, pmin
 
 
-def compute_psd(evoked, picks_modern, picks_legacy, n_jobs, alpha_window, cropped=True):
+def compute_psd(raw, picks_modern, picks_legacy, alpha_window, fft_length, desired_freq_res, n_jobs):
     """
     :param evoked: mne.Evoked object
     :param picks: selection of channels to parse
@@ -116,25 +114,24 @@ def compute_psd(evoked, picks_modern, picks_legacy, n_jobs, alpha_window, croppe
     :param cropped: if True, crop the frequency and PSD array returned to the range of alpha_window (DEFAULT: TRUE)
     :return: PSD array (n_channels, n_freqs), frequency array (n_freqs,)
     """
+    if raw.info['sfreq'] / fft_length > desired_freq_res:
+        raw.resample(desired_freq_res * fft_length, n_jobs=n_jobs, verbose=False)
     try:
-        psd, freqs = mne.time_frequency.psd_welch(evoked, n_fft=3300, picks=picks_modern, n_jobs=n_jobs)
+        psd, freqs = mne.time_frequency.psd_welch(raw, fmin=alpha_window[0], fmax=alpha_window[1], n_fft=fft_length,
+                                                  n_jobs=n_jobs, picks=picks_modern)
     except ValueError:
-        psd, freqs = mne.time_frequency.psd_welch(evoked, n_fft=3300, picks=picks_legacy, n_jobs=n_jobs)
-    if cropped:
-        alpha_low_bound_idx = np.where(freqs >= alpha_window[0])[0][0]
-        alpha_hi_bound_idx = np.where(freqs >= alpha_window[1])[0][0]
-        freqs = freqs[alpha_low_bound_idx:alpha_hi_bound_idx]
-        psd = psd[:, alpha_low_bound_idx:alpha_hi_bound_idx]
-
+        psd, freqs = mne.time_frequency.psd_welch(raw, fmin=alpha_window[0], fmax=alpha_window[1], n_fft=fft_length,
+                                                  n_jobs=n_jobs, picks=picks_legacy)
+    del raw
     return psd, freqs
 
 
-def run_paf(evoked): # main body that interacts with sensor_space_analysis module
+def run_paf(raw): # main body that interacts with sensor_space_analysis module
 
-    psd, freqs = compute_psd(evoked, paf_cfg.occipital_selection_narrow, paf_cfg.occipital_selection_narrow_legacy,
-                             n_jobs=18, alpha_window=paf_cfg.alpha_band)
+    psd, freqs = compute_psd(raw, paf_cfg.occipital_subselection_modern, paf_cfg.occipital_subselection_legacy,
+                             alpha_window=paf_cfg.alpha_band, fft_length=paf_cfg.n_fft, desired_freq_res=paf_cfg.desired_freq_res, n_jobs=8)
 
-    freq_res = np.diff(freqs).mean() # change this variable name to something else (delta waves exist)
+    freq_res = np.diff(freqs).mean() # frequency resolution
 
     subject_peak_freqs = []
     subject_peak_qweights = []
@@ -168,9 +165,7 @@ def run_paf(evoked): # main body that interacts with sensor_space_analysis modul
     channel_weights = subject_peak_qweights / subject_peak_qweights.max()
     # not so sure about the below... it seems very passive and average-y...
     #paf = np.sum(subject_peak_freqs * channel_weights) / np.sum(channel_weights) # MATLAB formula...?
-    # why not locate the greatest Q?
-    #paf_max_q = subject_peak_freqs[np.argmax(subject_peak_qweights)]
-
+    
     ranked_peaks = rank_peaks_by_qweight(channel_weights, subject_peak_freqs) # max Q in first index
 
     return freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, ranked_peaks
@@ -178,10 +173,8 @@ def run_paf(evoked): # main body that interacts with sensor_space_analysis modul
 
 if __name__ == '__main__':
 
-    start = time.time() # script timing
-
     rep = mne.Report() # use MNE reports to test cases
-    rep_name = f'PAF_module_case_testing_filterlength{paf_cfg.sgf_width}_polyorder{paf_cfg.k}.html'
+    rep_name = f'PAF_module_case_testing_rawsignal_filterlength{paf_cfg.sgf_width}_polyorder{paf_cfg.k}.html'
 
     df = pd.read_csv('prelim_fixation_age_vs_peak.csv')
     for _, subj_row in df.iterrows():
@@ -196,12 +189,13 @@ if __name__ == '__main__':
         else:
             subject = subj
 
-        evo_match = fnmatch.filter(os.listdir(), f'{subject}*ave.fif')
-        if len(evo_match) == 0:
+        raw_match = fnmatch.filter(os.listdir(), f'{subject}*raw_sss.fif')
+        if len(raw_match) == 0:
             continue
-        subject_evo = mne.read_evokeds(evo_match[0])[0]
+        subject_raw = mne.io.read_raw_fif(raw_match[0])
 
-        freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, ranked_peaks = run_paf(subject_evo)
+        freqs, psd, smooth_psd, subject_peak_freqs, channel_weights, ranked_peaks = run_paf(subject_raw)
+
         top_n_ranked_peaks = ranked_peaks[:paf_cfg.n_peaks_to_rank]
         fig, (ax_orig, ax_smooth) = plt.subplots(2, 1, sharex=True, sharey=True)
         for channel_orig in psd:
@@ -227,7 +221,6 @@ if __name__ == '__main__':
         del fig
 
     rep.save(rep_name, open_browser=False, overwrite=True)
-    print(f'Time to complete: {time.time() - start}')
 
 
 
