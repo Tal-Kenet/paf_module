@@ -1,8 +1,14 @@
+# .csv location, filename
+csv_loc = ''
+# report name
+rep_name = '.html'
+
+n_jobs = 12
 # savitzky-golay filter frame width (in odd-numbered samples), longer = more smoothing
-sgf_width = 11
+filter_width = 11
 
 # savitzky-golay filter polynomial degree/order, greater = less smoothing, better preservation of feature heights, widths
-k = 5 # default 5
+filter_order = 5 # default 5
 
 # alpha band width [Hz]
 alpha_band = [7, 13]
